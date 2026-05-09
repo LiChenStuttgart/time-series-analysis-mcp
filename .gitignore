@@ -1,0 +1,99 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+
+# Virtual environments and local interpreters
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+
+# Test files and test artifacts
+tests/
+test/
+testing/
+*_test.py
+test_*.py
+*.test.py
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+junit.xml
+test-results/
+test_results/
+reports/
+
+# Type-checking and linting caches
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.dmypy.json
+dmypy.json
+
+# Build, packaging, and distribution output
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+wheelhouse/
+
+# Installer and dependency caches
+.pip/
+.cache/
+pip-cache/
+
+# Notebook and analysis scratch files
+.ipynb_checkpoints/
+*.ipynb
+
+# Logs and runtime output
+*.log
+logs/
+*.out
+*.err
+*.pid
+*.pid.lock
+
+# Temporary and backup files
+tmp/
+temp/
+.tmp/
+.temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+
+# Local data/output artifacts
+data/
+datasets/
+artifacts/
+outputs/
+output/
+downloads/
+
+# OS and editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.code-workspace
+
+# MCP/client local config
+.mcp/
+.omc/
