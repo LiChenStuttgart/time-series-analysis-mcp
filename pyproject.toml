@@ -9,7 +9,7 @@ description = "Enterprise-oriented MCP server for multi-dimensional time-series 
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    { name = "AI Group", email = "jackdark425@gmail.com" }
+    { name = "LiChenStuttgart", email = "3380836@gmail.com" }
 ]
 license = { text = "MIT" }
 keywords = [

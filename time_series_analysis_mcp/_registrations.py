@@ -48,6 +48,12 @@ def _unavailable_stub(target: str, cause: Exception) -> Callable[..., str]:
 
 _MANIFEST: tuple[tuple[str, str, str, str], ...] = (
     (
+        "list_tools",
+        "server",
+        "tools.time_series_adapter:list_tools_adapter",
+        "List all MCP tools with descriptions and guidance on when to use each tool.",
+    ),
+    (
         "time_series_loader",
         "data_preparation",
         "tools.time_series_adapter:loader_adapter",

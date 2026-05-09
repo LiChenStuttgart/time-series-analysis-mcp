@@ -1,4 +1,4 @@
-"""MCP-facing adapters for the eight time-series tools."""
+"""MCP-facing adapters for the time-series tools."""
 
 from __future__ import annotations
 
@@ -19,6 +19,56 @@ from time_series_analysis.unit_root import run_unit_root_tests
 from time_series_analysis_mcp.errors import ValidationError
 
 from .output_formatter import render
+
+
+_WHEN_TO_USE: dict[str, str] = {
+    "list_tools": "Use when you need to discover the available MCP tools, compare their purpose, or decide the next step in a time-series workflow.",
+    "time_series_loader": "Use first for enterprise tabular data from CSV, TXT, JSON, XLSX, or XLS when you need a regular multi-series SeriesCollection grouped by dimensions.",
+    "time_series_missing_data_handler": "Use after loading data and before diagnostics or forecasting when series contain nulls, NaNs, or calendar gaps.",
+    "time_series_outlier_handler": "Use after loading or missing-data handling when spikes or anomalous points may distort diagnostics or forecasts.",
+    "time_series_unit_root_test": "Use when deciding whether a series is stationary or should be differenced before ARIMA-style modeling.",
+    "time_series_seasonality_test": "Use when checking whether daily, monthly, quarterly, or custom-period series have meaningful seasonal structure.",
+    "time_series_structural_break_test": "Use when a series may have a level, trend, or variance shift caused by regime changes, policy changes, or business events.",
+    "time_series_arima": "Use for ARIMA-style forecasting, especially when stationarity and autocorrelation are central to the modeling problem.",
+    "time_series_exponential_smoothing": "Use for level, trend, and seasonal forecasting workflows where recent observations should receive more weight.",
+}
+
+
+def list_tools_adapter(
+    group: str | None = None,
+    output_format: str = "json",
+    save_path: str | None = None,
+) -> str:
+    """List registered tools with purpose and usage guidance."""
+    from time_series_analysis_mcp._registrations import load_all
+    from time_series_analysis_mcp.registry import REGISTRY
+
+    if len(REGISTRY) == 0:
+        load_all()
+
+    group_filter = group.lower() if group else None
+    tools = []
+    for spec in sorted(REGISTRY, key=lambda item: item.name):
+        if group_filter and spec.group.lower() != group_filter:
+            continue
+        tools.append(
+            {
+                "name": spec.name,
+                "group": spec.group,
+                "description": spec.description,
+                "when_to_use": _WHEN_TO_USE.get(
+                    spec.name,
+                    "Use when this tool's description matches the current analysis task.",
+                ),
+            }
+        )
+    result = {
+        "ok": True,
+        "tool_count": len(tools),
+        "group": group,
+        "tools": tools,
+    }
+    return _render_and_save(result, output_format, save_path)
 
 
 def loader_adapter(
