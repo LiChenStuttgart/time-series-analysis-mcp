@@ -86,6 +86,7 @@ artifacts/
 outputs/
 output/
 downloads/
+docs/
 
 # OS and editor metadata
 .DS_Store
