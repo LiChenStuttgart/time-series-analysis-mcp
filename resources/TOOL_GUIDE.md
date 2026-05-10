@@ -9,4 +9,5 @@ Recommended workflow:
 3. Run `time_series_missing_data_handler`.
 4. Run `time_series_outlier_handler`.
 5. Run diagnostics.
-6. Run a forecasting tool.
+6. Run `time_series_deseats_decompose` when you need trend, seasonal, fitted, residual, detrended, or seasonally adjusted components.
+7. Run a forecasting tool.

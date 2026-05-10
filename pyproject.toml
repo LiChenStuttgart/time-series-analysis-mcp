@@ -53,6 +53,9 @@ time-series-analysis-mcp = "time_series_analysis_mcp.cli:cli"
 [tool.hatch.build.targets.wheel]
 packages = ["time_series_analysis_mcp", "time_series_analysis", "tools"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"time_series_analysis/r/deseats_runner.R" = "time_series_analysis/r/deseats_runner.R"
+
 [tool.hatch.build.targets.sdist]
 include = [
     "/README.md",

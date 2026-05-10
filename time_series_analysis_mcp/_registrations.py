@@ -90,6 +90,12 @@ _MANIFEST: tuple[tuple[str, str, str, str], ...] = (
         "Detect structural breaks and change points per time series.",
     ),
     (
+        "time_series_deseats_decompose",
+        "decomposition",
+        "tools.time_series_adapter:deseats_decompose_adapter",
+        "Run DeSeaTS data-driven seasonal decomposition per time series.",
+    ),
+    (
         "time_series_arima",
         "forecasting",
         "tools.time_series_adapter:arima_adapter",
@@ -100,6 +106,12 @@ _MANIFEST: tuple[tuple[str, str, str, str], ...] = (
         "forecasting",
         "tools.time_series_adapter:exponential_smoothing_adapter",
         "Fit exponential smoothing models and forecast selected time series.",
+    ),
+    (
+        "time_series_deseats_forecast",
+        "forecasting",
+        "tools.time_series_adapter:deseats_forecast_adapter",
+        "Fit DeSeaTS Seasonal Semi-ARMA models and forecast selected time series.",
     ),
 )
 

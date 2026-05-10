@@ -201,3 +201,66 @@ class ForecastSeriesResult(BaseModel):
 class ForecastResult(BaseModel):
     ok: bool = True
     forecast_results: list[ForecastSeriesResult]
+
+
+class DeseatsOptions(BaseModel):
+    seasonal_period: int
+    order_poly: int
+    kernel_fun: str
+    bwidth: float | None = None
+    selected_bwidth: float | None = None
+    boundary_method: str
+    autocor: bool | None = None
+    error_model: str
+    inf_criterion: str
+
+
+class DeseatsDecompositionSeriesResult(BaseModel):
+    series_id: str
+    n_obs: int
+    frequency: int
+    time_index: list[str]
+    observations: list[float]
+    trend: list[float]
+    seasonality: list[float]
+    fitted: list[float]
+    residuals: list[float]
+    deseasonalized: list[float]
+    detrended: list[float]
+    selected_bandwidth: float
+    sum_autocov: float | None = None
+    options: DeseatsOptions
+    warnings: list[str] = Field(default_factory=list)
+
+
+class DeseatsDecompositionResult(BaseModel):
+    ok: bool = True
+    decomposition_results: list[DeseatsDecompositionSeriesResult]
+
+
+class ForecastIntervalBand(BaseModel):
+    confidence_level: float
+    lower: list[float]
+    upper: list[float]
+
+
+class DeseatsForecastSeriesResult(BaseModel):
+    series_id: str
+    model: str = "DeSeaTS-SemiARMA"
+    n_obs: int
+    frequency: int
+    forecast_index: list[str]
+    forecast: list[float]
+    intervals: list[ForecastIntervalBand] = Field(default_factory=list)
+    lower: list[float] = Field(default_factory=list)
+    upper: list[float] = Field(default_factory=list)
+    selected_bandwidth: float
+    arma_order: list[int] | None = None
+    decomposition_tail: dict[str, list[float]] = Field(default_factory=dict)
+    options: dict[str, Any] = Field(default_factory=dict)
+    fit_warnings: list[str] = Field(default_factory=list)
+
+
+class DeseatsForecastResult(BaseModel):
+    ok: bool = True
+    forecast_results: list[DeseatsForecastSeriesResult]

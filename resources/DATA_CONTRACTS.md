@@ -69,3 +69,14 @@ Handlers preserve audit flags in `series[].metadata`:
 - `outlier_flags`
 - `outlier_detection_method`
 - `outlier_handling_method`
+
+## DeSeaTS Results
+
+`time_series_deseats_decompose` returns `decomposition_results[]` with
+`observations`, `trend`, `seasonality`, `fitted`, `residuals`,
+`deseasonalized`, and `detrended` vectors aligned to the input `time_index`.
+
+`time_series_deseats_forecast` returns `forecast_results[]` with
+`forecast_index`, point `forecast`, `intervals`, selected DeSeaTS
+bandwidth, and the fitted residual ARMA order. These tools require `Rscript`
+plus the R packages `deseats` and `jsonlite`.

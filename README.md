@@ -11,8 +11,10 @@ Enterprise-oriented MCP server for multi-dimensional time-series loading, qualit
 - `time_series_unit_root_test`
 - `time_series_seasonality_test`
 - `time_series_structural_break_test`
+- `time_series_deseats_decompose`
 - `time_series_arima`
 - `time_series_exponential_smoothing`
+- `time_series_deseats_forecast`
 
 ## Run
 
@@ -47,6 +49,19 @@ Use the absolute virtualenv Python path for MCP clients. Most clients launch
 servers without activating your shell environment, so `python -m
 time_series_analysis_mcp` can fail outside this repository with `No module
 named time_series_analysis_mcp`.
+
+## Optional DeSeaTS Tools
+
+`time_series_deseats_decompose` and `time_series_deseats_forecast` call the R
+`deseats` package through `Rscript`. Install the R runtime dependencies before
+using those tools:
+
+```bash
+Rscript -e 'install.packages("jsonlite", repos="https://cloud.r-project.org")'
+R CMD INSTALL /Users/lchen/github_phd/deseats
+```
+
+Set `TS_MCP_RSCRIPT` if `Rscript` is not on `PATH`.
 
 ## Example
 
