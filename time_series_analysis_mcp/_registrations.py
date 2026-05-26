@@ -99,19 +99,37 @@ _MANIFEST: tuple[tuple[str, str, str, str], ...] = (
         "time_series_arima",
         "forecasting",
         "tools.time_series_adapter:arima_adapter",
-        "Fit ARIMA-style models and forecast selected time series.",
+        "Fit optimized ARIMA or seasonal ARIMA models and forecast selected time series.",
     ),
     (
         "time_series_exponential_smoothing",
         "forecasting",
         "tools.time_series_adapter:exponential_smoothing_adapter",
-        "Fit exponential smoothing models and forecast selected time series.",
+        "Fit optimized Holt-Winters exponential smoothing models and forecast selected time series.",
     ),
     (
         "time_series_deseats_forecast",
         "forecasting",
         "tools.time_series_adapter:deseats_forecast_adapter",
         "Fit DeSeaTS Seasonal Semi-ARMA models and forecast selected time series.",
+    ),
+    (
+        "time_series_chronos2_forecast",
+        "forecasting",
+        "tools.time_series_adapter:chronos2_forecast_adapter",
+        "Generate zero-shot probabilistic forecasts with the optional Amazon Chronos-2 model.",
+    ),
+    (
+        "time_series_toto2_forecast",
+        "forecasting",
+        "tools.time_series_adapter:toto2_forecast_adapter",
+        "Generate zero-shot probabilistic forecasts with the optional Datadog Toto 2.0 model.",
+    ),
+    (
+        "time_series_automl_forecast",
+        "forecasting",
+        "tools.time_series_adapter:automl_forecast_adapter",
+        "Select and evaluate forecasting models with optional AutoGluon TimeSeries.",
     ),
 )
 

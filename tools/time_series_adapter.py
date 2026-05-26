@@ -6,6 +6,7 @@ from typing import Any
 
 from time_series_analysis.deseats import decompose_deseats, forecast_deseats
 from time_series_analysis.forecasting import forecast_arima, forecast_exponential_smoothing
+from time_series_analysis.foundation import forecast_automl, forecast_chronos2, forecast_toto2
 from time_series_analysis.loading import (
     collection_from_single_series,
     load_time_series_file,
@@ -21,7 +22,6 @@ from time_series_analysis_mcp.errors import ValidationError
 
 from .output_formatter import render
 
-
 _WHEN_TO_USE: dict[str, str] = {
     "list_tools": "Use when you need to discover the available MCP tools, compare their purpose, or decide the next step in a time-series workflow.",
     "time_series_loader": "Use first for enterprise tabular data from CSV, TXT, JSON, XLSX, or XLS when you need a regular multi-series SeriesCollection grouped by dimensions.",
@@ -31,9 +31,12 @@ _WHEN_TO_USE: dict[str, str] = {
     "time_series_seasonality_test": "Use when checking whether daily, monthly, quarterly, or custom-period series have meaningful seasonal structure.",
     "time_series_structural_break_test": "Use when a series may have a level, trend, or variance shift caused by regime changes, policy changes, or business events.",
     "time_series_deseats_decompose": "Use for data-driven local-regression seasonal decomposition with DeSeaTS when you need trend, seasonal, fitted, residual, detrended, or seasonally adjusted components.",
-    "time_series_arima": "Use for ARIMA-style forecasting, especially when stationarity and autocorrelation are central to the modeling problem.",
-    "time_series_exponential_smoothing": "Use for level, trend, and seasonal forecasting workflows where recent observations should receive more weight.",
+    "time_series_arima": "Use for fitted ARIMA or seasonal ARIMA forecasting when autocorrelation, moving-average effects, and seasonal dependence are central to the modeling problem.",
+    "time_series_exponential_smoothing": "Use for optimized Holt-Winters level, trend, and seasonal forecasts where recent observations should receive more weight.",
     "time_series_deseats_forecast": "Use for short-horizon forecasts based on DeSeaTS seasonal decomposition plus ARMA residual modeling.",
+    "time_series_chronos2_forecast": "Use for zero-shot probabilistic forecasting with Amazon Chronos-2 when model-backed forecasts and native quantiles are needed.",
+    "time_series_toto2_forecast": "Use for zero-shot probabilistic forecasts with Toto 2.0, especially when aligned series should be modeled as multivariate targets.",
+    "time_series_automl_forecast": "Use for automated model comparison, validation scoring, ensembles, and model-selected probabilistic forecasts through AutoGluon.",
 }
 
 
@@ -355,6 +358,11 @@ def arima_adapter(
     max_p: int = 3,
     max_d: int = 2,
     max_q: int = 3,
+    seasonal_period: int | None = None,
+    max_seasonal_p: int = 1,
+    max_seasonal_d: int = 1,
+    max_seasonal_q: int = 1,
+    information_criterion: str = "aic",
     forecast_steps: int = 12,
     confidence_level: float = 0.95,
     holdout_size: int = 0,
@@ -378,6 +386,11 @@ def arima_adapter(
         max_p=max_p,
         max_d=max_d,
         max_q=max_q,
+        seasonal_period=seasonal_period,
+        max_P=max_seasonal_p,
+        max_D=max_seasonal_d,
+        max_Q=max_seasonal_q,
+        information_criterion=information_criterion,
         forecast_steps=forecast_steps,
         confidence_level=confidence_level,
         holdout_size=holdout_size,
@@ -477,6 +490,8 @@ def exponential_smoothing_adapter(
     forecast_steps: int = 12,
     confidence_level: float = 0.95,
     holdout_size: int = 0,
+    interval_simulations: int = 1000,
+    random_seed: int | None = None,
     output_format: str = "json",
     save_path: str | None = None,
 ) -> str:
@@ -499,6 +514,140 @@ def exponential_smoothing_adapter(
         forecast_steps=forecast_steps,
         confidence_level=confidence_level,
         holdout_size=holdout_size,
+        interval_simulations=interval_simulations,
+        random_seed=random_seed,
+    )
+    return _render_and_save(result, output_format, save_path)
+
+
+def chronos2_forecast_adapter(
+    series_collection: dict[str, Any] | None = None,
+    data: list[float] | None = None,
+    file_path: str | None = None,
+    time_column: str | None = None,
+    value_columns: list[str] | None = None,
+    dimension_columns: list[str] | None = None,
+    frequency: str = "month",
+    target_metrics: list[str] | None = None,
+    forecast_steps: int = 12,
+    quantile_levels: list[float] | None = None,
+    model_id: str | None = None,
+    device: str | None = None,
+    context_length: int | None = None,
+    holdout_size: int = 0,
+    output_format: str = "json",
+    save_path: str | None = None,
+) -> str:
+    collection = _collection_from_inputs(
+        series_collection=series_collection,
+        data=data,
+        file_path=file_path,
+        time_column=time_column,
+        value_columns=value_columns,
+        dimension_columns=dimension_columns,
+        frequency=frequency,
+    )
+    result = forecast_chronos2(
+        collection,
+        target_metrics=target_metrics,
+        forecast_steps=forecast_steps,
+        quantile_levels=quantile_levels,
+        model_id=model_id,
+        device=device,
+        context_length=context_length,
+        holdout_size=holdout_size,
+    )
+    return _render_and_save(result, output_format, save_path)
+
+
+def toto2_forecast_adapter(
+    series_collection: dict[str, Any] | None = None,
+    data: list[float] | None = None,
+    file_path: str | None = None,
+    time_column: str | None = None,
+    value_columns: list[str] | None = None,
+    dimension_columns: list[str] | None = None,
+    frequency: str = "month",
+    target_metrics: list[str] | None = None,
+    group_by_dimensions: list[str] | None = None,
+    forecast_steps: int = 12,
+    quantile_levels: list[float] | None = None,
+    model_id: str | None = None,
+    device: str | None = None,
+    context_length: int | None = None,
+    decode_block_size: int | None = None,
+    local_files_only: bool | None = None,
+    holdout_size: int = 0,
+    output_format: str = "json",
+    save_path: str | None = None,
+) -> str:
+    collection = _collection_from_inputs(
+        series_collection=series_collection,
+        data=data,
+        file_path=file_path,
+        time_column=time_column,
+        value_columns=value_columns,
+        dimension_columns=dimension_columns,
+        frequency=frequency,
+    )
+    result = forecast_toto2(
+        collection,
+        target_metrics=target_metrics,
+        group_by_dimensions=group_by_dimensions,
+        forecast_steps=forecast_steps,
+        quantile_levels=quantile_levels,
+        model_id=model_id,
+        device=device,
+        context_length=context_length,
+        decode_block_size=decode_block_size,
+        local_files_only=local_files_only,
+        holdout_size=holdout_size,
+    )
+    return _render_and_save(result, output_format, save_path)
+
+
+def automl_forecast_adapter(
+    series_collection: dict[str, Any] | None = None,
+    data: list[float] | None = None,
+    file_path: str | None = None,
+    time_column: str | None = None,
+    value_columns: list[str] | None = None,
+    dimension_columns: list[str] | None = None,
+    frequency: str = "month",
+    target_metrics: list[str] | None = None,
+    forecast_steps: int = 12,
+    quantile_levels: list[float] | None = None,
+    presets: str = "medium_quality",
+    eval_metric: str = "MASE",
+    model_names: list[str] | None = None,
+    num_val_windows: int = 1,
+    enable_ensemble: bool = True,
+    time_limit_seconds: int | None = None,
+    model_path: str | None = None,
+    output_format: str = "json",
+    save_path: str | None = None,
+) -> str:
+    collection = _collection_from_inputs(
+        series_collection=series_collection,
+        data=data,
+        file_path=file_path,
+        time_column=time_column,
+        value_columns=value_columns,
+        dimension_columns=dimension_columns,
+        frequency=frequency,
+    )
+    result = forecast_automl(
+        collection,
+        target_metrics=target_metrics,
+        forecast_steps=forecast_steps,
+        quantile_levels=quantile_levels,
+        presets=presets,
+        eval_metric=eval_metric,
+        model_names=model_names,
+        num_val_windows=num_val_windows,
+        enable_ensemble=enable_ensemble,
+        time_limit_seconds=time_limit_seconds,
+        model_path=model_path,
     )
     return _render_and_save(result, output_format, save_path)
 

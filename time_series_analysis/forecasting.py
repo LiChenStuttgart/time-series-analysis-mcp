@@ -1,14 +1,21 @@
-"""Forecasting models."""
+"""Classical statistical forecasting models."""
 
 from __future__ import annotations
 
 import math
+import warnings
+from itertools import product
+from typing import Any
+
+import numpy as np
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
 from time_series_analysis_mcp.errors import EstimationError, ValidationError
 
 from .metrics import mae, mape, rmse
 from .schemas import ForecastMetrics, ForecastResult, ForecastSeriesResult, SeriesCollection
-from .utils import clean_values, difference, integrate_forecast, next_index_values, ols, stddev
+from .utils import clean_values, next_index_values
 
 
 def forecast_arima(
@@ -20,12 +27,21 @@ def forecast_arima(
     max_p: int = 3,
     max_d: int = 2,
     max_q: int = 3,
+    seasonal_period: int | None = None,
+    max_P: int = 1,
+    max_D: int = 1,
+    max_Q: int = 1,
+    information_criterion: str = "aic",
     forecast_steps: int = 12,
     confidence_level: float = 0.95,
     holdout_size: int = 0,
 ) -> ForecastResult:
-    if forecast_steps <= 0:
-        raise ValidationError("forecast_steps must be positive", forecast_steps=forecast_steps)
+    """Fit ARIMA/SARIMA models with maximum-likelihood parameter estimation."""
+    _validate_forecast_request(forecast_steps, confidence_level)
+    _validate_order_bounds(max_p, max_d, max_q, max_P, max_D, max_Q)
+    criterion = _coerce_information_criterion(information_criterion)
+    requested_order = _coerce_order(order)
+    requested_seasonal = _coerce_seasonal_order(seasonal_order)
     results = []
     for item in collection.series:
         if any(value is None for value in item.values):
@@ -37,34 +53,68 @@ def forecast_arima(
         if len(values) < 8:
             raise ValidationError("ARIMA requires at least 8 observations", series_id=item.series_id)
         train, holdout = _split_holdout(values, holdout_size)
-        selected_order = _select_order(train, max_p=max_p, max_d=max_d, max_q=max_q) if auto_order else _coerce_order(order)
-        fit = _fit_ar_model(train, selected_order)
-        forecast = _forecast_ar(train, fit, forecast_steps)
-        lower, upper = _intervals(forecast, fit["residual_std"], confidence_level)
-        metrics = ForecastMetrics(
-            in_sample_mae=mae(fit["actual"], fit["fitted"]),
-            in_sample_rmse=rmse(fit["actual"], fit["fitted"]),
-            in_sample_mape=mape(fit["actual"], fit["fitted"]),
-        )
+        fit_warnings: list[str] = []
+
+        if auto_order:
+            search_period = None
+            fixed_seasonal_order = requested_seasonal if seasonal_order is not None else None
+            if fixed_seasonal_order is None:
+                search_period = (
+                    seasonal_period
+                    if seasonal_period is not None
+                    else _infer_period(collection.schema_.frequency)
+                )
+                if search_period is not None:
+                    _validate_seasonal_period(search_period)
+                    if len(train) < 2 * search_period:
+                        fit_warnings.append(
+                            "seasonal order selection skipped because training data contains fewer than two seasonal periods"
+                        )
+                        search_period = None
+            selected_order, selected_seasonal = _select_sarima_spec(
+                train,
+                fixed_seasonal_order=fixed_seasonal_order,
+                seasonal_period=search_period,
+                max_p=max_p,
+                max_d=max_d,
+                max_q=max_q,
+                max_P=max_P,
+                max_D=max_D,
+                max_Q=max_Q,
+                information_criterion=criterion,
+            )
+            report_seasonal = seasonal_order is not None or search_period is not None
+        else:
+            selected_order = requested_order
+            selected_seasonal = requested_seasonal
+            report_seasonal = seasonal_order is not None
+
+        _validate_sarima_history(train, selected_seasonal)
         if holdout:
-            holdout_forecast = _forecast_ar(train, fit, len(holdout))
-            metrics.holdout_mae = mae(holdout, holdout_forecast)
-            metrics.holdout_rmse = rmse(holdout, holdout_forecast)
-            metrics.holdout_mape = mape(holdout, holdout_forecast)
-        warnings = []
-        if seasonal_order is not None:
-            warnings.append("seasonal_order recorded but pure-Python ARIMA fallback ignores seasonal terms")
-        if selected_order[2] != 0:
-            warnings.append("MA terms are approximated by an autoregressive fallback")
+            training_fit, training_warnings = _fit_sarima(train, selected_order, selected_seasonal)
+            holdout_forecast, _lower, _upper = _sarima_forecast(
+                training_fit, len(holdout), confidence_level
+            )
+            holdout_metrics = _holdout_metrics(holdout, holdout_forecast)
+            fit_warnings.extend(f"holdout fit: {message}" for message in training_warnings)
+        else:
+            holdout_metrics = {}
+
+        _validate_sarima_history(values, selected_seasonal)
+        fitted, final_warnings = _fit_sarima(values, selected_order, selected_seasonal)
+        forecast, lower, upper = _sarima_forecast(fitted, forecast_steps, confidence_level)
+        metrics = _in_sample_metrics(values, fitted.fittedvalues)
+        _assign_metrics(metrics, holdout_metrics)
+        fit_warnings.extend(final_warnings)
         results.append(
             ForecastSeriesResult(
                 series_id=item.series_id,
                 model="ARIMA",
                 order=list(selected_order),
-                seasonal_order=list(seasonal_order) if seasonal_order is not None else None,
-                parameters=fit["parameters"],
-                aic=fit["aic"],
-                bic=fit["bic"],
+                seasonal_order=list(selected_seasonal) if report_seasonal else None,
+                parameters=_sarima_parameters(fitted),
+                aic=_optional_finite_float(fitted.aic),
+                bic=_optional_finite_float(fitted.bic),
                 forecast_index=next_index_values(
                     collection.time_index,
                     collection.schema_.frequency,
@@ -74,7 +124,7 @@ def forecast_arima(
                 lower=lower,
                 upper=upper,
                 metrics=metrics,
-                fit_warnings=warnings + fit["warnings"],
+                fit_warnings=_unique_warnings(fit_warnings),
             )
         )
     return ForecastResult(forecast_results=results)
@@ -91,13 +141,24 @@ def forecast_exponential_smoothing(
     forecast_steps: int = 12,
     confidence_level: float = 0.95,
     holdout_size: int = 0,
+    interval_simulations: int = 1000,
+    random_seed: int | None = None,
 ) -> ForecastResult:
-    if forecast_steps <= 0:
-        raise ValidationError("forecast_steps must be positive", forecast_steps=forecast_steps)
+    """Fit optimized Holt-Winters exponential smoothing models."""
+    _validate_forecast_request(forecast_steps, confidence_level)
     if trend not in {None, "add", "mul"}:
         raise ValidationError("trend must be null, 'add', or 'mul'", trend=trend)
     if seasonal not in {None, "add", "mul"}:
         raise ValidationError("seasonal must be null, 'add', or 'mul'", seasonal=seasonal)
+    if initialization_method not in {"estimated", "heuristic", "legacy-heuristic"}:
+        raise ValidationError(
+            "initialization_method must be 'estimated', 'heuristic', or 'legacy-heuristic'",
+            initialization_method=initialization_method,
+        )
+    if interval_simulations <= 0:
+        raise ValidationError(
+            "interval_simulations must be positive", interval_simulations=interval_simulations
+        )
     results = []
     for item in collection.series:
         if any(value is None for value in item.values):
@@ -113,38 +174,66 @@ def forecast_exponential_smoothing(
             )
         if (trend == "mul" or seasonal == "mul") and any(value <= 0 for value in values):
             raise ValidationError("multiplicative smoothing requires strictly positive data")
-        period = seasonal_periods or _infer_period(collection.schema_.frequency) if seasonal else None
-        if seasonal and period and len(values) < period * 2:
-            raise ValidationError("seasonal smoothing requires at least two full seasons")
+        period = None
+        if seasonal:
+            period = (
+                seasonal_periods
+                if seasonal_periods is not None
+                else _infer_period(collection.schema_.frequency)
+            )
+        if seasonal:
+            if period is None:
+                raise ValidationError(
+                    "seasonal_periods is required when seasonality cannot be inferred from frequency"
+                )
+            _validate_seasonal_period(period)
         train, holdout = _split_holdout(values, holdout_size)
-        fit = _fit_exp_smoothing(
-            train,
+        _validate_ets_history(train, seasonal, period)
+        fit_warnings: list[str] = []
+        if holdout:
+            training_fit, training_warnings = _fit_exponential_smoothing(
+                train,
+                trend=trend,
+                seasonal=seasonal,
+                seasonal_periods=period,
+                damped_trend=damped_trend,
+                initialization_method=initialization_method,
+            )
+            holdout_forecast = _float_list(training_fit.forecast(len(holdout)), "ETS holdout forecast")
+            holdout_metrics = _holdout_metrics(holdout, holdout_forecast)
+            fit_warnings.extend(f"holdout fit: {message}" for message in training_warnings)
+        else:
+            holdout_metrics = {}
+
+        _validate_ets_history(values, seasonal, period)
+        fitted, final_warnings = _fit_exponential_smoothing(
+            values,
             trend=trend,
             seasonal=seasonal,
             seasonal_periods=period,
             damped_trend=damped_trend,
+            initialization_method=initialization_method,
         )
-        forecast = _forecast_exp(fit, forecast_steps)
-        lower, upper = _intervals(forecast, fit["residual_std"], confidence_level)
-        metrics = ForecastMetrics(
-            in_sample_mae=mae(fit["actual"], fit["fitted"]),
-            in_sample_rmse=rmse(fit["actual"], fit["fitted"]),
-            in_sample_mape=mape(fit["actual"], fit["fitted"]),
+        forecast = _float_list(fitted.forecast(forecast_steps), "ETS forecast")
+        lower, upper = _ets_intervals(
+            fitted,
+            forecast_steps,
+            confidence_level,
+            interval_simulations,
+            random_seed,
         )
-        if holdout:
-            holdout_forecast = _forecast_exp(fit, len(holdout))
-            metrics.holdout_mae = mae(holdout, holdout_forecast)
-            metrics.holdout_rmse = rmse(holdout, holdout_forecast)
-            metrics.holdout_mape = mape(holdout, holdout_forecast)
+        metrics = _in_sample_metrics(values, fitted.fittedvalues)
+        _assign_metrics(metrics, holdout_metrics)
+        fit_warnings.extend(final_warnings)
         results.append(
             ForecastSeriesResult(
                 series_id=item.series_id,
                 model="ExponentialSmoothing",
                 order=None,
                 seasonal_order=[0, 0, 0, period] if period else None,
-                parameters=fit["parameters"],
-                aic=fit["aic"],
-                bic=fit["bic"],
+                parameters=_ets_parameters(fitted.params),
+                aic=_optional_finite_float(fitted.aic),
+                bic=_optional_finite_float(fitted.bic),
                 forecast_index=next_index_values(
                     collection.time_index,
                     collection.schema_.frequency,
@@ -154,11 +243,19 @@ def forecast_exponential_smoothing(
                 lower=lower,
                 upper=upper,
                 metrics=metrics,
-                fit_warnings=fit["warnings"]
-                + ([] if initialization_method == "estimated" else ["initialization_method recorded but pure-Python fallback estimates initial state"]),
+                fit_warnings=_unique_warnings(fit_warnings),
             )
         )
     return ForecastResult(forecast_results=results)
+
+
+def _validate_forecast_request(forecast_steps: int, confidence_level: float) -> None:
+    if forecast_steps <= 0:
+        raise ValidationError("forecast_steps must be positive", forecast_steps=forecast_steps)
+    if not 0 < confidence_level < 1:
+        raise ValidationError(
+            "confidence_level must be between 0 and 1", confidence_level=confidence_level
+        )
 
 
 def _coerce_order(order: list[int] | tuple[int, int, int] | None) -> tuple[int, int, int]:
@@ -172,7 +269,63 @@ def _coerce_order(order: list[int] | tuple[int, int, int] | None) -> tuple[int, 
     return p, d, q
 
 
+def _coerce_seasonal_order(
+    seasonal_order: list[int] | tuple[int, int, int, int] | None,
+) -> tuple[int, int, int, int]:
+    if seasonal_order is None:
+        return (0, 0, 0, 0)
+    if len(seasonal_order) != 4:
+        raise ValidationError(
+            "seasonal_order must have four integers [P, D, Q, s]",
+            seasonal_order=list(seasonal_order),
+        )
+    P, D, Q, period = [int(value) for value in seasonal_order]
+    if min(P, D, Q, period) < 0:
+        raise ValidationError(
+            "seasonal_order values must be non-negative",
+            seasonal_order=[P, D, Q, period],
+        )
+    if P + D + Q > 0:
+        _validate_seasonal_period(period)
+    elif period == 1:
+        raise ValidationError("seasonal period must be at least 2", seasonal_period=period)
+    return P, D, Q, period
+
+
+def _validate_order_bounds(
+    max_p: int, max_d: int, max_q: int, max_P: int, max_D: int, max_Q: int
+) -> None:
+    bounds = {
+        "max_p": max_p,
+        "max_d": max_d,
+        "max_q": max_q,
+        "max_P": max_P,
+        "max_D": max_D,
+        "max_Q": max_Q,
+    }
+    invalid = {name: value for name, value in bounds.items() if value < 0}
+    if invalid:
+        raise ValidationError("automatic order limits must be non-negative", **invalid)
+
+
+def _coerce_information_criterion(value: str) -> str:
+    criterion = value.lower()
+    if criterion not in {"aic", "aicc", "bic"}:
+        raise ValidationError(
+            "information_criterion must be 'aic', 'aicc', or 'bic'",
+            information_criterion=value,
+        )
+    return criterion
+
+
+def _validate_seasonal_period(period: int) -> None:
+    if period < 2:
+        raise ValidationError("seasonal period must be at least 2", seasonal_period=period)
+
+
 def _split_holdout(values: list[float], holdout_size: int) -> tuple[list[float], list[float]]:
+    if holdout_size < 0:
+        raise ValidationError("holdout_size must be non-negative", holdout_size=holdout_size)
     if holdout_size <= 0:
         return values, []
     if holdout_size >= len(values) - 6:
@@ -180,171 +333,254 @@ def _split_holdout(values: list[float], holdout_size: int) -> tuple[list[float],
     return values[:-holdout_size], values[-holdout_size:]
 
 
-def _select_order(values: list[float], *, max_p: int, max_d: int, max_q: int) -> tuple[int, int, int]:
-    best_order = (1, 0, 0)
-    best_aic = float("inf")
-    for d in range(max_d + 1):
-        for p in range(max_p + 1):
+def _validate_sarima_history(values: list[float], seasonal_order: tuple[int, int, int, int]) -> None:
+    P, D, Q, period = seasonal_order
+    if P + D + Q > 0 and len(values) < 2 * period:
+        raise ValidationError(
+            "seasonal ARIMA requires at least two full seasonal periods",
+            n_obs=len(values),
+            seasonal_order=list(seasonal_order),
+        )
+
+
+def _validate_ets_history(values: list[float], seasonal: str | None, period: int | None) -> None:
+    if seasonal and period and len(values) < period * 2:
+        raise ValidationError(
+            "seasonal smoothing requires at least two full seasons",
+            n_obs=len(values),
+            seasonal_periods=period,
+        )
+
+
+def _select_sarima_spec(
+    values: list[float],
+    *,
+    fixed_seasonal_order: tuple[int, int, int, int] | None,
+    seasonal_period: int | None,
+    max_p: int,
+    max_d: int,
+    max_q: int,
+    max_P: int,
+    max_D: int,
+    max_Q: int,
+    information_criterion: str,
+) -> tuple[tuple[int, int, int], tuple[int, int, int, int]]:
+    order_candidates = list(
+        product(range(max_p + 1), range(max_d + 1), range(max_q + 1))
+    )
+    if fixed_seasonal_order is not None:
+        _validate_sarima_history(values, fixed_seasonal_order)
+        return _best_sarima_candidate(
+            values, order_candidates, [fixed_seasonal_order], information_criterion
+        )
+
+    selected_order, _no_seasonality = _best_sarima_candidate(
+        values, order_candidates, [(0, 0, 0, 0)], information_criterion
+    )
+    if seasonal_period is None:
+        return selected_order, (0, 0, 0, 0)
+
+    seasonal_candidates = [
+        (P, D, Q, seasonal_period)
+        for P, D, Q in product(range(max_P + 1), range(max_D + 1), range(max_Q + 1))
+    ]
+    return _best_sarima_candidate(
+        values, [selected_order], seasonal_candidates, information_criterion
+    )
+
+
+def _best_sarima_candidate(
+    values: list[float],
+    order_candidates: list[tuple[int, int, int]],
+    seasonal_candidates: list[tuple[int, int, int, int]],
+    information_criterion: str,
+) -> tuple[tuple[int, int, int], tuple[int, int, int, int]]:
+    best: tuple[tuple[int, int, int], tuple[int, int, int, int]] | None = None
+    best_score = float("inf")
+    for candidate_order in order_candidates:
+        for candidate_seasonal in seasonal_candidates:
             try:
-                fit = _fit_ar_model(values, (p, d, 0))
-            except Exception:
+                fitted, _warnings = _fit_sarima(
+                    values, candidate_order, candidate_seasonal, retain_warnings=False
+                )
+                score = _optional_finite_float(getattr(fitted, information_criterion))
+            except EstimationError:
                 continue
-            if fit["aic"] is not None and fit["aic"] < best_aic:
-                best_aic = fit["aic"]
-                best_order = (p, d, 0)
-    if max_q > 0:
-        # q is kept at zero in the pure-Python fallback, but max_q remains in
-        # the public API so a statsmodels implementation can fill it later.
-        pass
-    return best_order
+            if score is not None and score < best_score:
+                best = candidate_order, candidate_seasonal
+                best_score = score
+    if best is None:
+        raise EstimationError(
+            "automatic SARIMA order selection did not produce a valid fitted model",
+            information_criterion=information_criterion,
+        )
+    return best
 
 
-def _fit_ar_model(values: list[float], order: tuple[int, int, int]) -> dict:
-    p, d, q = order
-    transformed = difference(values, d)
-    if len(transformed) <= max(p + 2, 3):
-        raise EstimationError("not enough observations for requested ARIMA order", order=list(order))
-    warnings: list[str] = []
-    if p == 0:
-        level = sum(transformed) / len(transformed)
-        fitted = [level for _ in transformed]
-        residuals = [value - level for value in transformed]
-        parameters = {"const": level}
-        actual = transformed
-    else:
-        rows = []
-        targets = []
-        for idx in range(p, len(transformed)):
-            rows.append([1.0, *[transformed[idx - lag] for lag in range(1, p + 1)]])
-            targets.append(transformed[idx])
-        try:
-            beta, _se, _sse = ols(targets, rows)
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"OLS fit failed ({exc}); using persistence fallback")
-            beta = [0.0] + [1.0] + [0.0] * (p - 1)
-        fitted = [sum(beta[j] * row[j] for j in range(len(beta))) for row in rows]
-        residuals = [target - pred for target, pred in zip(targets, fitted, strict=True)]
-        parameters = {"const": beta[0], **{f"ar.L{i}": beta[i] for i in range(1, len(beta))}}
-        actual = targets
-    sse = sum(resid * resid for resid in residuals)
-    n = max(len(actual), 1)
-    k = len(parameters)
-    sigma = math.sqrt(max(sse / n, 1e-12))
-    aic = n * math.log(max(sse / n, 1e-12)) + 2 * k
-    bic = n * math.log(max(sse / n, 1e-12)) + k * math.log(n)
+def _fit_sarima(
+    values: list[float],
+    order: tuple[int, int, int],
+    seasonal_order: tuple[int, int, int, int],
+    *,
+    retain_warnings: bool = True,
+) -> tuple[Any, list[str]]:
+    try:
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            fitted = ARIMA(values, order=order, seasonal_order=seasonal_order).fit()
+    except Exception as exc:  # noqa: BLE001
+        raise EstimationError(
+            "SARIMA model estimation failed",
+            order=list(order),
+            seasonal_order=list(seasonal_order),
+            reason=str(exc),
+        ) from exc
+    if not retain_warnings:
+        return fitted, []
+    return fitted, _captured_warnings(captured)
+
+
+def _sarima_forecast(
+    fitted: Any, steps: int, confidence_level: float
+) -> tuple[list[float], list[float], list[float]]:
+    try:
+        prediction = fitted.get_forecast(steps=steps)
+        forecast = _float_list(prediction.predicted_mean, "SARIMA forecast")
+        confidence = np.asarray(
+            prediction.conf_int(alpha=1.0 - confidence_level), dtype=float
+        )
+        lower = _float_list(confidence[:, 0], "SARIMA lower interval")
+        upper = _float_list(confidence[:, 1], "SARIMA upper interval")
+    except Exception as exc:  # noqa: BLE001
+        raise EstimationError("SARIMA forecasting failed", reason=str(exc)) from exc
+    return forecast, lower, upper
+
+
+def _sarima_parameters(fitted: Any) -> dict[str, float]:
     return {
-        "order": order,
-        "transformed": transformed,
-        "parameters": {key: float(value) for key, value in parameters.items()},
-        "fitted": fitted,
-        "actual": actual,
-        "residual_std": sigma,
-        "aic": float(aic),
-        "bic": float(bic),
-        "warnings": warnings,
+        str(name): float(value)
+        for name, value in zip(fitted.param_names, fitted.params, strict=True)
+        if math.isfinite(float(value))
     }
 
 
-def _forecast_ar(values: list[float], fit: dict, steps: int) -> list[float]:
-    p, d, _q = fit["order"]
-    transformed = fit["transformed"][:]
-    params = fit["parameters"]
-    diff_forecast = []
-    for _ in range(steps):
-        if p == 0:
-            pred = params["const"]
-        else:
-            pred = params.get("const", 0.0)
-            for lag in range(1, p + 1):
-                pred += params.get(f"ar.L{lag}", 0.0) * transformed[-lag]
-        transformed.append(pred)
-        diff_forecast.append(pred)
-    return [float(value) for value in integrate_forecast(values, diff_forecast, d)]
-
-
-def _fit_exp_smoothing(
+def _fit_exponential_smoothing(
     values: list[float],
     *,
     trend: str | None,
     seasonal: str | None,
     seasonal_periods: int | None,
     damped_trend: bool,
-) -> dict:
-    alpha = 0.4
-    beta = 0.2 if trend else 0.0
-    gamma = 0.2 if seasonal and seasonal_periods else 0.0
-    phi = 0.9 if damped_trend else 1.0
-    level = values[0]
-    trend_value = values[1] - values[0] if len(values) > 1 and trend else 0.0
-    seasonals = [0.0] * (seasonal_periods or 1)
-    warnings = []
-    if seasonal and seasonal_periods:
-        baseline = sum(values[:seasonal_periods]) / seasonal_periods
-        for idx in range(seasonal_periods):
-            same = [values[j] for j in range(idx, len(values), seasonal_periods)]
-            seasonals[idx] = sum(same) / len(same) - baseline
-        if seasonal == "mul":
-            warnings.append("multiplicative seasonality approximated by additive fallback")
-    if trend == "mul":
-        warnings.append("multiplicative trend approximated by additive fallback")
-    fitted = []
-    for idx, value in enumerate(values):
-        seasonal_component = seasonals[idx % len(seasonals)] if seasonal else 0.0
-        prediction = level + phi * trend_value + seasonal_component
-        fitted.append(prediction)
-        prev_level = level
-        level = alpha * (value - seasonal_component) + (1 - alpha) * (level + phi * trend_value)
-        if trend:
-            trend_value = beta * (level - prev_level) + (1 - beta) * phi * trend_value
-        if seasonal and seasonal_periods:
-            seasonals[idx % seasonal_periods] = gamma * (value - level) + (1 - gamma) * seasonal_component
-    residuals = [actual - pred for actual, pred in zip(values, fitted, strict=True)]
-    sse = sum(resid * resid for resid in residuals)
-    n = len(values)
-    k = 2 + (seasonal_periods or 0)
-    aic = n * math.log(max(sse / n, 1e-12)) + 2 * k
-    bic = n * math.log(max(sse / n, 1e-12)) + k * math.log(n)
+    initialization_method: str,
+) -> tuple[Any, list[str]]:
+    try:
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            fitted = ExponentialSmoothing(
+                values,
+                trend=trend,
+                damped_trend=damped_trend,
+                seasonal=seasonal,
+                seasonal_periods=seasonal_periods,
+                initialization_method=initialization_method,
+            ).fit(optimized=True)
+    except Exception as exc:  # noqa: BLE001
+        raise EstimationError("exponential smoothing estimation failed", reason=str(exc)) from exc
+    return fitted, _captured_warnings(captured)
+
+
+def _ets_intervals(
+    fitted: Any,
+    steps: int,
+    confidence_level: float,
+    interval_simulations: int,
+    random_seed: int | None,
+) -> tuple[list[float], list[float]]:
+    try:
+        simulated = np.asarray(
+            fitted.simulate(
+                steps,
+                anchor="end",
+                repetitions=interval_simulations,
+                random_state=random_seed,
+            ),
+            dtype=float,
+        )
+        if simulated.ndim == 1:
+            simulated = simulated[:, np.newaxis]
+        alpha = 1.0 - confidence_level
+        lower = np.quantile(simulated, alpha / 2.0, axis=1)
+        upper = np.quantile(simulated, 1.0 - alpha / 2.0, axis=1)
+    except Exception as exc:  # noqa: BLE001
+        raise EstimationError(
+            "exponential smoothing interval simulation failed", reason=str(exc)
+        ) from exc
+    return _float_list(lower, "ETS lower interval"), _float_list(upper, "ETS upper interval")
+
+
+def _ets_parameters(raw: dict[str, Any]) -> dict[str, float]:
+    parameters: dict[str, float] = {}
+    for name in (
+        "smoothing_level",
+        "smoothing_trend",
+        "smoothing_seasonal",
+        "damping_trend",
+        "initial_level",
+        "initial_trend",
+    ):
+        value = raw.get(name)
+        if value is not None and math.isfinite(float(value)):
+            parameters[name] = float(value)
+    initial_seasons = raw.get("initial_seasons")
+    if initial_seasons is not None:
+        for index, value in enumerate(initial_seasons):
+            if math.isfinite(float(value)):
+                parameters[f"initial_seasonal.{index}"] = float(value)
+    return parameters
+
+
+def _in_sample_metrics(actual: list[float], fitted: Any) -> ForecastMetrics:
+    predicted = [float(value) for value in fitted]
+    return ForecastMetrics(
+        in_sample_mae=mae(actual, predicted),
+        in_sample_rmse=rmse(actual, predicted),
+        in_sample_mape=mape(actual, predicted),
+    )
+
+
+def _holdout_metrics(actual: list[float], forecast: list[float]) -> dict[str, float | None]:
     return {
-        "level": float(level),
-        "trend": float(trend_value),
-        "seasonals": [float(value) for value in seasonals],
-        "seasonal_periods": seasonal_periods,
-        "parameters": {
-            "smoothing_level": alpha,
-            "smoothing_trend": beta,
-            "smoothing_seasonal": gamma,
-            "damping_trend": phi,
-        },
-        "actual": values,
-        "fitted": fitted,
-        "residual_std": stddev(residuals),
-        "aic": float(aic),
-        "bic": float(bic),
-        "warnings": warnings,
+        "holdout_mae": mae(actual, forecast),
+        "holdout_rmse": rmse(actual, forecast),
+        "holdout_mape": mape(actual, forecast),
     }
 
 
-def _forecast_exp(fit: dict, steps: int) -> list[float]:
-    out = []
-    period = fit["seasonal_periods"] or 1
-    seasonals = fit["seasonals"]
-    for h in range(1, steps + 1):
-        seasonal_component = seasonals[(h - 1) % period] if seasonals else 0.0
-        out.append(float(fit["level"] + h * fit["trend"] + seasonal_component))
-    return out
+def _assign_metrics(metrics: ForecastMetrics, holdout: dict[str, float | None]) -> None:
+    for name, value in holdout.items():
+        setattr(metrics, name, value)
 
 
-def _intervals(values: list[float], residual_std: float, confidence_level: float) -> tuple[list[float], list[float]]:
-    if confidence_level >= 0.99:
-        z = 2.58
-    elif confidence_level >= 0.95:
-        z = 1.96
-    elif confidence_level >= 0.9:
-        z = 1.64
-    else:
-        z = 1.28
-    width = z * residual_std
-    return [float(value - width) for value in values], [float(value + width) for value in values]
+def _captured_warnings(captured: list[Any]) -> list[str]:
+    return _unique_warnings([str(item.message) for item in captured])
+
+
+def _unique_warnings(messages: list[str]) -> list[str]:
+    return list(dict.fromkeys(message for message in messages if message))
+
+
+def _float_list(values: Any, description: str) -> list[float]:
+    result = [float(value) for value in values]
+    if not all(math.isfinite(value) for value in result):
+        raise EstimationError(f"{description} contains non-finite values")
+    return result
+
+
+def _optional_finite_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    converted = float(value)
+    return converted if math.isfinite(converted) else None
 
 
 def _infer_period(frequency: str) -> int | None:

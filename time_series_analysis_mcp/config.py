@@ -39,6 +39,34 @@ class RuntimeLimits:
         _int_env("TS_MCP_MAX_TIMESTAMPS", 10_000),
     )
     deseats_boot_cores: int = _int_env("TS_MCP_DESEATS_BOOT_CORES", 1)
+    model_device: str = os.environ.get("TS_MCP_MODEL_DEVICE", "cpu")
+    model_cache_dir: str | None = os.environ.get("TS_MCP_MODEL_CACHE_DIR") or None
+    model_offline: bool = _bool_env("TS_MCP_MODEL_OFFLINE")
+    chronos2_model_id: str = os.environ.get("TS_MCP_CHRONOS2_MODEL_ID", "amazon/chronos-2")
+    chronos2_max_series: int = _int_env(
+        "TS_MCP_CHRONOS2_MAX_SERIES",
+        _int_env("TS_MCP_MAX_SERIES", 20_000),
+    )
+    chronos2_max_context: int = _int_env("TS_MCP_CHRONOS2_MAX_CONTEXT", 8192)
+    chronos2_max_prediction_length: int = _int_env(
+        "TS_MCP_CHRONOS2_MAX_PREDICTION_LENGTH",
+        1024,
+    )
+    toto2_model_id: str = os.environ.get("TS_MCP_TOTO2_MODEL_ID", "Datadog/Toto-2.0-22m")
+    toto2_max_series: int = _int_env(
+        "TS_MCP_TOTO2_MAX_SERIES",
+        _int_env("TS_MCP_MAX_SERIES", 20_000),
+    )
+    toto2_max_context: int = _int_env("TS_MCP_TOTO2_MAX_CONTEXT", 4096)
+    toto2_max_prediction_length: int = _int_env(
+        "TS_MCP_TOTO2_MAX_PREDICTION_LENGTH",
+        1024,
+    )
+    automl_max_series: int = _int_env(
+        "TS_MCP_AUTOML_MAX_SERIES",
+        _int_env("TS_MCP_MAX_SERIES", 20_000),
+    )
+    automl_time_limit_seconds: int = _int_env("TS_MCP_AUTOML_TIME_LIMIT_SECONDS", 300)
 
 
 LIMITS = RuntimeLimits()

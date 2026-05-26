@@ -203,6 +203,30 @@ class ForecastResult(BaseModel):
     forecast_results: list[ForecastSeriesResult]
 
 
+class ProbabilisticForecastSeriesResult(BaseModel):
+    series_id: str
+    model: str
+    forecast_index: list[str]
+    forecast: list[float]
+    quantiles: dict[str, list[float]] = Field(default_factory=dict)
+    metrics: ForecastMetrics = Field(default_factory=ForecastMetrics)
+    inference_metadata: dict[str, Any] = Field(default_factory=dict)
+    fit_warnings: list[str] = Field(default_factory=list)
+
+
+class ProbabilisticForecastResult(BaseModel):
+    ok: bool = True
+    forecast_results: list[ProbabilisticForecastSeriesResult]
+
+
+class AutoMLForecastResult(BaseModel):
+    ok: bool = True
+    forecast_results: list[ProbabilisticForecastSeriesResult]
+    best_model: str | None = None
+    leaderboard: list[dict[str, Any]] = Field(default_factory=list)
+    configuration: dict[str, Any] = Field(default_factory=dict)
+
+
 class DeseatsOptions(BaseModel):
     seasonal_period: int
     order_poly: int
