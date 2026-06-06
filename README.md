@@ -25,7 +25,10 @@ Enterprise-oriented MCP server for multi-dimensional time-series loading, qualit
 `statsmodels`. Supply `seasonal_order=[P, D, Q, s]` for an explicit seasonal
 model, or set `auto_order=true` to perform bounded information-criterion
 selection in nonseasonal and seasonal stages; monthly, quarterly, and daily
-inputs infer periods of 12, 4, and 7 when enough history is available.
+inputs infer periods of 12, 4, and 7 when enough history is available. Use
+`target_metrics`, `known_future_covariate_metrics`, `future_covariates`, and
+optional `calendar_covariates` for ARIMAX-style forecasts with known future
+influence factors.
 
 `time_series_exponential_smoothing` fits optimized Holt-Winters models through
 `statsmodels`, including native additive or multiplicative trend and seasonal
@@ -78,6 +81,29 @@ R CMD INSTALL /Users/lchen/github_phd/deseats
 
 Set `TS_MCP_RSCRIPT` if `Rscript` is not on `PATH`.
 
+## Local Foundation-Model Weights
+
+The direct Chronos-2 and Toto 2.0 tools load their pinned weights from the
+repository-root `modelweights/` directory by default. Runtime inference does
+not automatically download either canonical model.
+
+Prepare and verify the ignored local weight files while online:
+
+```bash
+python scripts/manage_modelweights.py download
+python scripts/manage_modelweights.py verify
+```
+
+The tracked `resources/MODEL_WEIGHTS_MANIFEST.json` pins upstream revisions,
+file sizes, and SHA-256 checksums. Each model is verified before its first load
+in a server process. Set `TS_MCP_MODEL_WEIGHTS_DIR` to use another local root.
+Because `modelweights/` is gitignored, every checkout or deployment must
+prepare the files separately.
+
+Use `python scripts/manage_modelweights.py status` to inspect local files and
+`python scripts/manage_modelweights.py check-latest` to check for upstream
+revision changes. See `resources/MODEL_WEIGHTS.md` for the update procedure.
+
 ## Optional Chronos-2 Tool
 
 `time_series_chronos2_forecast` runs Amazon Chronos-2 zero-shot forecasts and
@@ -88,12 +114,12 @@ dependencies before invoking the tool:
 python -m pip install -e '.[chronos2]'
 ```
 
-The first call downloads `amazon/chronos-2` unless it is already cached. Set
-`TS_MCP_MODEL_DEVICE` (`cpu`, `cuda`, or another supported `device_map`
-value), `TS_MCP_MODEL_CACHE_DIR`, or `TS_MCP_CHRONOS2_MODEL_ID` to override
-runtime defaults. This first integration treats selected `SeriesCollection`
-series as target items; native covariate and multivariate-role mappings are
-not exposed yet.
+The default `amazon/chronos-2` ID resolves to
+`modelweights/chronos-2`. Set `TS_MCP_MODEL_DEVICE` (`cpu`, `cuda`, or another
+supported `device_map` value) to select the inference device. This integration
+treats selected `SeriesCollection` series as target items and supports
+`past_covariate_metrics`, `known_future_covariate_metrics`,
+`future_covariates`, and generated `calendar_covariates`.
 
 ## Optional Toto 2.0 Tool
 
@@ -105,16 +131,18 @@ series together using `group_by_dimensions`.
 python -m pip install -e '.[toto2]'
 ```
 
-Set `TS_MCP_TOTO2_MODEL_ID`, `TS_MCP_MODEL_DEVICE`,
-`TS_MCP_MODEL_CACHE_DIR`, `TS_MCP_MODEL_OFFLINE=1`,
-`TS_MCP_TOTO2_MAX_CONTEXT`, or `TS_MCP_TOTO2_MAX_PREDICTION_LENGTH` to
-configure runtime behavior. The tool checks the local Hugging Face cache
-before attempting a remote download, which permits inference in a
-network-restricted MCP process after model weights have been cached. Input
+Toto 2.0 requires Python 3.12 or newer. The default
+`Datadog/Toto-2.0-22m` ID resolves to `modelweights/toto-2.0-22m`. Set
+`TS_MCP_MODEL_DEVICE`, `TS_MCP_TOTO2_MAX_CONTEXT`, or
+`TS_MCP_TOTO2_MAX_PREDICTION_LENGTH` to configure runtime behavior. Input
 contexts are left-padded with masked values when required by Toto's patch
 size. Toto 2.0 currently exposes fixed quantiles from `0.1` through `0.9`;
 exogenous variables and fine-tuning are not supported by the Toto 2.0
 upstream API yet.
+
+Non-vendored model IDs are disabled by default. For development only, set
+`TS_MCP_ALLOW_REMOTE_MODELS=1` and explicitly request a non-vendored model ID.
+The two canonical pinned models never fall back to a remote download.
 
 ## Optional AutoML Tool
 
@@ -132,7 +160,10 @@ Use `model_names` to provide AutoGluon model names such as `SeasonalNaive`,
 `ETS`, or `Chronos2`. AutoGluon's documented `TotoModel` targets Toto 1.0;
 use `time_series_toto2_forecast` for Toto 2.0. Fitted AutoGluon artifacts are
 temporary by default; provide `model_path` when a fitted predictor must be
-retained after the tool call.
+retained after the tool call. AutoGluon's own Chronos model management is
+separate from the direct tool's repository-local `modelweights/` directory.
+AutoML accepts past-only covariates, known-future covariates, and generated
+calendar covariates; AutoGluon decides which candidate models use them.
 
 ## Example
 

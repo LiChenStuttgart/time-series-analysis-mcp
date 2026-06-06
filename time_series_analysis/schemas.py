@@ -195,6 +195,7 @@ class ForecastSeriesResult(BaseModel):
     lower: list[float]
     upper: list[float]
     metrics: ForecastMetrics = Field(default_factory=ForecastMetrics)
+    covariates: dict[str, Any] = Field(default_factory=dict)
     fit_warnings: list[str] = Field(default_factory=list)
 
 
@@ -210,6 +211,7 @@ class ProbabilisticForecastSeriesResult(BaseModel):
     forecast: list[float]
     quantiles: dict[str, list[float]] = Field(default_factory=dict)
     metrics: ForecastMetrics = Field(default_factory=ForecastMetrics)
+    covariates: dict[str, Any] = Field(default_factory=dict)
     inference_metadata: dict[str, Any] = Field(default_factory=dict)
     fit_warnings: list[str] = Field(default_factory=list)
 

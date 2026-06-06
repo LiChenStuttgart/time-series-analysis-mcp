@@ -352,6 +352,7 @@ def arima_adapter(
     value_columns: list[str] | None = None,
     dimension_columns: list[str] | None = None,
     frequency: str = "month",
+    target_metrics: list[str] | None = None,
     order: list[int] | None = None,
     seasonal_order: list[int] | None = None,
     auto_order: bool = False,
@@ -366,6 +367,10 @@ def arima_adapter(
     forecast_steps: int = 12,
     confidence_level: float = 0.95,
     holdout_size: int = 0,
+    known_future_covariate_metrics: list[str] | None = None,
+    past_covariate_metrics: list[str] | None = None,
+    future_covariates: dict[str, Any] | None = None,
+    calendar_covariates: list[str] | None = None,
     output_format: str = "json",
     save_path: str | None = None,
 ) -> str:
@@ -380,6 +385,7 @@ def arima_adapter(
     )
     result = forecast_arima(
         collection,
+        target_metrics=target_metrics,
         order=order,
         seasonal_order=seasonal_order,
         auto_order=auto_order,
@@ -394,6 +400,10 @@ def arima_adapter(
         forecast_steps=forecast_steps,
         confidence_level=confidence_level,
         holdout_size=holdout_size,
+        known_future_covariate_metrics=known_future_covariate_metrics,
+        past_covariate_metrics=past_covariate_metrics,
+        future_covariates=future_covariates,
+        calendar_covariates=calendar_covariates,
     )
     return _render_and_save(result, output_format, save_path)
 
@@ -535,6 +545,10 @@ def chronos2_forecast_adapter(
     device: str | None = None,
     context_length: int | None = None,
     holdout_size: int = 0,
+    known_future_covariate_metrics: list[str] | None = None,
+    past_covariate_metrics: list[str] | None = None,
+    future_covariates: dict[str, Any] | None = None,
+    calendar_covariates: list[str] | None = None,
     output_format: str = "json",
     save_path: str | None = None,
 ) -> str:
@@ -556,6 +570,10 @@ def chronos2_forecast_adapter(
         device=device,
         context_length=context_length,
         holdout_size=holdout_size,
+        known_future_covariate_metrics=known_future_covariate_metrics,
+        past_covariate_metrics=past_covariate_metrics,
+        future_covariates=future_covariates,
+        calendar_covariates=calendar_covariates,
     )
     return _render_and_save(result, output_format, save_path)
 
@@ -624,6 +642,10 @@ def automl_forecast_adapter(
     enable_ensemble: bool = True,
     time_limit_seconds: int | None = None,
     model_path: str | None = None,
+    known_future_covariate_metrics: list[str] | None = None,
+    past_covariate_metrics: list[str] | None = None,
+    future_covariates: dict[str, Any] | None = None,
+    calendar_covariates: list[str] | None = None,
     output_format: str = "json",
     save_path: str | None = None,
 ) -> str:
@@ -648,6 +670,10 @@ def automl_forecast_adapter(
         enable_ensemble=enable_ensemble,
         time_limit_seconds=time_limit_seconds,
         model_path=model_path,
+        known_future_covariate_metrics=known_future_covariate_metrics,
+        past_covariate_metrics=past_covariate_metrics,
+        future_covariates=future_covariates,
+        calendar_covariates=calendar_covariates,
     )
     return _render_and_save(result, output_format, save_path)
 

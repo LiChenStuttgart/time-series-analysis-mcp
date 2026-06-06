@@ -75,7 +75,9 @@ Handlers preserve audit flags in `series[].metadata`:
 `time_series_arima` returns fitted ARIMA or seasonal ARIMA results with
 estimated AR, MA, seasonal AR, and seasonal MA parameters where requested.
 `order` and `seasonal_order` report the fitted specification, and `lower` and
-`upper` are model prediction intervals.
+`upper` are model prediction intervals. When known-future covariates are
+supplied, ARIMA fits with `statsmodels` exogenous regressors and the
+`covariates` field records the aligned inputs used for each target.
 
 `time_series_exponential_smoothing` returns optimized Holt-Winters smoothing
 and initial-state parameters. Its `lower` and `upper` forecast intervals are
@@ -103,12 +105,15 @@ plus the R packages `deseats` and `jsonlite`.
 - `forecast`: the Chronos-2 point forecast.
 - `quantiles`: probability-level keys such as `"0.1"`, `"0.5"`, and `"0.9"`.
 - `metrics`: optional trailing holdout metrics when `holdout_size` is requested.
-- `inference_metadata`: model identifier, device, context length, horizon, and quantile levels.
+- `inference_metadata`: model identifier, pinned revision, weight checksum,
+  local model source, device, context length, horizon, and quantile levels.
 - `fit_warnings`: input truncation or inference warnings.
 
-The initial Chronos-2 integration accepts complete target series from the
-existing `SeriesCollection` contract. It does not yet expose past/future
-covariate roles or explicitly grouped multivariate targets.
+Chronos-2 accepts complete target series from the existing `SeriesCollection`
+contract and can include past-only covariates, known-future covariates, and
+generated calendar covariates. Known-future metric covariates must provide
+`future_covariates` values for the forecast horizon. The `covariates` field
+and `inference_metadata.covariates` record the roles used for each target.
 
 ## Toto 2.0 Results
 
@@ -123,8 +128,8 @@ By default each series is forecast independently. When
 values are placed in the same multivariate Toto 2.0 inference call. Missing
 history values are supplied through Toto 2.0 target masks and reported in
 `fit_warnings`; short contexts may also be left-padded with masked values to
-align to the loaded model's patch size. Cached model weights are used before
-remote loading is attempted.
+align to the loaded model's patch size. The canonical model loads only from
+the verified repository-local `modelweights/` directory.
 
 ## AutoML Results
 
@@ -135,6 +140,9 @@ remote loading is attempted.
 - `leaderboard`: AutoGluon validation leaderboard rows.
 - `configuration`: presets, validation windows, ensemble and time-limit settings.
 
-This initial AutoML contract accepts complete target series. It does not
-provide known-future covariate fields yet. The tool cleans up AutoGluon model
-artifacts after inference unless an explicit `model_path` is supplied.
+AutoML accepts complete target series plus past-only covariates,
+known-future covariates, and generated calendar covariates. Known-future
+covariates are passed to AutoGluon through `known_covariates_names` and the
+future covariate frame; some AutoGluon candidate models may ignore them. The
+tool cleans up AutoGluon model artifacts after inference unless an explicit
+`model_path` is supplied.

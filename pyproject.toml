@@ -39,11 +39,11 @@ scientific = [
     "ruptures>=1.1,<2",
 ]
 chronos2 = [
-    "chronos-forecasting>=2.0,<3",
+    "chronos-forecasting==2.2.2",
     "pandas>=1.5,<3",
 ]
 toto2 = [
-    "toto-2 @ git+https://github.com/DataDog/toto.git#subdirectory=toto2",
+    "toto-2 @ git+https://github.com/DataDog/toto.git@44ea4e88852228039564aa3e76fac26aafac0803#subdirectory=toto2",
     "torch>=2.5",
 ]
 automl = [
@@ -71,6 +71,7 @@ packages = ["time_series_analysis_mcp", "time_series_analysis", "tools"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "time_series_analysis/r/deseats_runner.R" = "time_series_analysis/r/deseats_runner.R"
+"resources/MODEL_WEIGHTS_MANIFEST.json" = "time_series_analysis_mcp/MODEL_WEIGHTS_MANIFEST.json"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -82,6 +83,7 @@ include = [
     "/time_series_analysis_mcp",
     "/time_series_analysis",
     "/tools",
+    "/scripts",
     "/resources",
     "/docs",
     "/tests",

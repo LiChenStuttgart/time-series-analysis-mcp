@@ -87,6 +87,7 @@ outputs/
 output/
 downloads/
 docs/
+modelweights/
 
 # OS and editor metadata
 .DS_Store

@@ -14,22 +14,33 @@ Recommended workflow:
 
 `time_series_arima` uses fitted ARIMA or seasonal ARIMA models. Supply an
 explicit `seasonal_order`, or use `auto_order` with bounded seasonal order
-limits for staged information-criterion selection.
+limits for staged information-criterion selection. It also supports
+ARIMAX-style known-future covariates through
+`known_future_covariate_metrics`, `future_covariates`, and generated
+`calendar_covariates`.
 
 `time_series_exponential_smoothing` uses optimized Holt-Winters estimation for
 level, trend, and optional seasonal components.
 
 `time_series_chronos2_forecast` requires the `chronos2` optional dependency
-extra and model weights on first use. It provides zero-shot point and
-quantile forecasts for selected complete target series.
+extra and verified weights under repository-root `modelweights/chronos-2`. It
+provides zero-shot point and quantile forecasts for selected complete target
+series, with optional past-only, known-future, and generated calendar
+covariates.
 
 `time_series_toto2_forecast` requires the `toto2` optional dependency extra.
 It provides direct Toto 2.0 zero-shot fixed-quantile forecasts and supports
-multivariate target grouping through `group_by_dimensions`. It checks local
-cached model weights before attempting a network fetch; set
-`TS_MCP_MODEL_OFFLINE=1` for a strictly offline MCP process.
+multivariate target grouping through `group_by_dimensions`. It loads verified
+weights from repository-root `modelweights/toto-2.0-22m`.
+
+Prepare both ignored local model directories with
+`python scripts/manage_modelweights.py download`, then validate them with
+`python scripts/manage_modelweights.py verify`. Runtime inference never
+downloads either canonical model.
 
 `time_series_automl_forecast` requires the `automl` optional dependency extra.
 It evaluates AutoGluon forecasting candidates, returns a leaderboard and
 generates predictions from its selected model. Install the extra into the
-same Python environment used to launch the MCP server.
+same Python environment used to launch the MCP server. It passes
+known-future covariates to AutoGluon and keeps past-only covariates in the
+training frame.

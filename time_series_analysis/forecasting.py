@@ -13,14 +13,22 @@ from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
 from time_series_analysis_mcp.errors import EstimationError, ValidationError
 
+from .covariates import build_covariate_bundles
 from .metrics import mae, mape, rmse
-from .schemas import ForecastMetrics, ForecastResult, ForecastSeriesResult, SeriesCollection
+from .schemas import (
+    ForecastMetrics,
+    ForecastResult,
+    ForecastSeriesResult,
+    SeriesCollection,
+    TimeSeriesItem,
+)
 from .utils import clean_values, next_index_values
 
 
 def forecast_arima(
     collection: SeriesCollection,
     *,
+    target_metrics: list[str] | None = None,
     order: list[int] | tuple[int, int, int] | None = None,
     seasonal_order: list[int] | tuple[int, int, int, int] | None = None,
     auto_order: bool = False,
@@ -35,6 +43,10 @@ def forecast_arima(
     forecast_steps: int = 12,
     confidence_level: float = 0.95,
     holdout_size: int = 0,
+    known_future_covariate_metrics: list[str] | None = None,
+    past_covariate_metrics: list[str] | None = None,
+    future_covariates: dict[str, Any] | None = None,
+    calendar_covariates: list[str] | None = None,
 ) -> ForecastResult:
     """Fit ARIMA/SARIMA models with maximum-likelihood parameter estimation."""
     _validate_forecast_request(forecast_steps, confidence_level)
@@ -42,8 +54,20 @@ def forecast_arima(
     criterion = _coerce_information_criterion(information_criterion)
     requested_order = _coerce_order(order)
     requested_seasonal = _coerce_seasonal_order(seasonal_order)
+    excluded_metrics = set(known_future_covariate_metrics or []) | set(past_covariate_metrics or [])
+    selected_items = _select_forecast_series(collection, target_metrics, excluded_metrics)
+    covariates = build_covariate_bundles(
+        collection,
+        selected_items,
+        forecast_steps=forecast_steps,
+        known_future_covariate_metrics=known_future_covariate_metrics,
+        past_covariate_metrics=past_covariate_metrics,
+        future_covariates=future_covariates,
+        calendar_covariates=calendar_covariates,
+        allow_past_only=False,
+    )
     results = []
-    for item in collection.series:
+    for item in selected_items:
         if any(value is None for value in item.values):
             raise ValidationError(
                 "ARIMA requires complete series; run time_series_missing_data_handler first",
@@ -52,7 +76,14 @@ def forecast_arima(
         values = clean_values(item.values)
         if len(values) < 8:
             raise ValidationError("ARIMA requires at least 8 observations", series_id=item.series_id)
+        bundle = covariates[item.series_id]
+        exog = _exog_array(bundle.history_rows(bundle.known_future_names))
+        future_exog = _exog_array(
+            bundle.future_rows(history_end=len(values), prediction_length=forecast_steps)
+        )
         train, holdout = _split_holdout(values, holdout_size)
+        train_exog = exog[: len(train)] if exog is not None else None
+        holdout_exog = exog[len(train) :] if exog is not None and holdout else None
         fit_warnings: list[str] = []
 
         if auto_order:
@@ -75,6 +106,7 @@ def forecast_arima(
                 train,
                 fixed_seasonal_order=fixed_seasonal_order,
                 seasonal_period=search_period,
+                exog=train_exog,
                 max_p=max_p,
                 max_d=max_d,
                 max_q=max_q,
@@ -91,9 +123,11 @@ def forecast_arima(
 
         _validate_sarima_history(train, selected_seasonal)
         if holdout:
-            training_fit, training_warnings = _fit_sarima(train, selected_order, selected_seasonal)
+            training_fit, training_warnings = _fit_sarima(
+                train, selected_order, selected_seasonal, exog=train_exog
+            )
             holdout_forecast, _lower, _upper = _sarima_forecast(
-                training_fit, len(holdout), confidence_level
+                training_fit, len(holdout), confidence_level, exog=holdout_exog
             )
             holdout_metrics = _holdout_metrics(holdout, holdout_forecast)
             fit_warnings.extend(f"holdout fit: {message}" for message in training_warnings)
@@ -101,8 +135,12 @@ def forecast_arima(
             holdout_metrics = {}
 
         _validate_sarima_history(values, selected_seasonal)
-        fitted, final_warnings = _fit_sarima(values, selected_order, selected_seasonal)
-        forecast, lower, upper = _sarima_forecast(fitted, forecast_steps, confidence_level)
+        fitted, final_warnings = _fit_sarima(
+            values, selected_order, selected_seasonal, exog=exog
+        )
+        forecast, lower, upper = _sarima_forecast(
+            fitted, forecast_steps, confidence_level, exog=future_exog
+        )
         metrics = _in_sample_metrics(values, fitted.fittedvalues)
         _assign_metrics(metrics, holdout_metrics)
         fit_warnings.extend(final_warnings)
@@ -124,6 +162,7 @@ def forecast_arima(
                 lower=lower,
                 upper=upper,
                 metrics=metrics,
+                covariates=bundle.metadata(),
                 fit_warnings=_unique_warnings(fit_warnings),
             )
         )
@@ -333,6 +372,29 @@ def _split_holdout(values: list[float], holdout_size: int) -> tuple[list[float],
     return values[:-holdout_size], values[-holdout_size:]
 
 
+def _select_forecast_series(
+    collection: SeriesCollection,
+    target_metrics: list[str] | None,
+    excluded_metrics: set[str],
+) -> list[TimeSeriesItem]:
+    requested = {metric for metric in (target_metrics or []) if metric}
+    overlap = requested & excluded_metrics
+    if overlap:
+        raise ValidationError(
+            "target_metrics cannot also be covariate metrics",
+            metrics=sorted(overlap),
+        )
+    selected = [
+        item
+        for item in collection.series
+        if (not requested or item.metric in requested)
+        and (requested or item.metric not in excluded_metrics)
+    ]
+    if not selected:
+        raise ValidationError("no series matched target_metrics", target_metrics=target_metrics)
+    return selected
+
+
 def _validate_sarima_history(values: list[float], seasonal_order: tuple[int, int, int, int]) -> None:
     P, D, Q, period = seasonal_order
     if P + D + Q > 0 and len(values) < 2 * period:
@@ -357,6 +419,7 @@ def _select_sarima_spec(
     *,
     fixed_seasonal_order: tuple[int, int, int, int] | None,
     seasonal_period: int | None,
+    exog: Any | None,
     max_p: int,
     max_d: int,
     max_q: int,
@@ -371,11 +434,11 @@ def _select_sarima_spec(
     if fixed_seasonal_order is not None:
         _validate_sarima_history(values, fixed_seasonal_order)
         return _best_sarima_candidate(
-            values, order_candidates, [fixed_seasonal_order], information_criterion
+            values, order_candidates, [fixed_seasonal_order], information_criterion, exog=exog
         )
 
     selected_order, _no_seasonality = _best_sarima_candidate(
-        values, order_candidates, [(0, 0, 0, 0)], information_criterion
+        values, order_candidates, [(0, 0, 0, 0)], information_criterion, exog=exog
     )
     if seasonal_period is None:
         return selected_order, (0, 0, 0, 0)
@@ -385,7 +448,7 @@ def _select_sarima_spec(
         for P, D, Q in product(range(max_P + 1), range(max_D + 1), range(max_Q + 1))
     ]
     return _best_sarima_candidate(
-        values, [selected_order], seasonal_candidates, information_criterion
+        values, [selected_order], seasonal_candidates, information_criterion, exog=exog
     )
 
 
@@ -394,6 +457,8 @@ def _best_sarima_candidate(
     order_candidates: list[tuple[int, int, int]],
     seasonal_candidates: list[tuple[int, int, int, int]],
     information_criterion: str,
+    *,
+    exog: Any | None,
 ) -> tuple[tuple[int, int, int], tuple[int, int, int, int]]:
     best: tuple[tuple[int, int, int], tuple[int, int, int, int]] | None = None
     best_score = float("inf")
@@ -401,7 +466,11 @@ def _best_sarima_candidate(
         for candidate_seasonal in seasonal_candidates:
             try:
                 fitted, _warnings = _fit_sarima(
-                    values, candidate_order, candidate_seasonal, retain_warnings=False
+                    values,
+                    candidate_order,
+                    candidate_seasonal,
+                    exog=exog,
+                    retain_warnings=False,
                 )
                 score = _optional_finite_float(getattr(fitted, information_criterion))
             except EstimationError:
@@ -422,12 +491,13 @@ def _fit_sarima(
     order: tuple[int, int, int],
     seasonal_order: tuple[int, int, int, int],
     *,
+    exog: Any | None = None,
     retain_warnings: bool = True,
 ) -> tuple[Any, list[str]]:
     try:
         with warnings.catch_warnings(record=True) as captured:
             warnings.simplefilter("always")
-            fitted = ARIMA(values, order=order, seasonal_order=seasonal_order).fit()
+            fitted = ARIMA(values, exog=exog, order=order, seasonal_order=seasonal_order).fit()
     except Exception as exc:  # noqa: BLE001
         raise EstimationError(
             "SARIMA model estimation failed",
@@ -441,10 +511,10 @@ def _fit_sarima(
 
 
 def _sarima_forecast(
-    fitted: Any, steps: int, confidence_level: float
+    fitted: Any, steps: int, confidence_level: float, *, exog: Any | None = None
 ) -> tuple[list[float], list[float], list[float]]:
     try:
-        prediction = fitted.get_forecast(steps=steps)
+        prediction = fitted.get_forecast(steps=steps, exog=exog)
         forecast = _float_list(prediction.predicted_mean, "SARIMA forecast")
         confidence = np.asarray(
             prediction.conf_int(alpha=1.0 - confidence_level), dtype=float
@@ -454,6 +524,12 @@ def _sarima_forecast(
     except Exception as exc:  # noqa: BLE001
         raise EstimationError("SARIMA forecasting failed", reason=str(exc)) from exc
     return forecast, lower, upper
+
+
+def _exog_array(rows: list[list[float]]) -> Any | None:
+    if not rows:
+        return None
+    return np.asarray(rows, dtype=float)
 
 
 def _sarima_parameters(fitted: Any) -> dict[str, float]:

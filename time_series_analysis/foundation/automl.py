@@ -5,11 +5,13 @@ from __future__ import annotations
 import math
 import sys
 import tempfile
+from contextlib import nullcontext
 from typing import Any
 
 from time_series_analysis_mcp.config import LIMITS
 from time_series_analysis_mcp.errors import DependencyError, EstimationError, ValidationError
 
+from ..covariates import build_covariate_bundles, covariate_metadata
 from ..schemas import (
     AutoMLForecastResult,
     ProbabilisticForecastSeriesResult,
@@ -34,6 +36,10 @@ def forecast_automl(
     enable_ensemble: bool = True,
     time_limit_seconds: int | None = None,
     model_path: str | None = None,
+    known_future_covariate_metrics: list[str] | None = None,
+    past_covariate_metrics: list[str] | None = None,
+    future_covariates: dict[str, Any] | None = None,
+    calendar_covariates: list[str] | None = None,
     predictor_factory: Any | None = None,
     timeseries_dataframe_cls: Any | None = None,
 ) -> AutoMLForecastResult:
@@ -46,23 +52,47 @@ def forecast_automl(
         time_limit_seconds=time_limit_seconds,
         model_path=model_path,
     )
-    selected = _select_series(collection, target_metrics)
+    excluded_metrics = set(known_future_covariate_metrics or []) | set(past_covariate_metrics or [])
+    selected = _select_series(collection, target_metrics, excluded_metrics)
     if len(selected) > LIMITS.automl_max_series:
         raise ValidationError(
             "AutoML series limit exceeded",
             series=len(selected),
             max_series=LIMITS.automl_max_series,
         )
+    covariates = build_covariate_bundles(
+        collection,
+        selected,
+        forecast_steps=forecast_steps,
+        known_future_covariate_metrics=known_future_covariate_metrics,
+        past_covariate_metrics=past_covariate_metrics,
+        future_covariates=future_covariates,
+        calendar_covariates=calendar_covariates,
+    )
+    known_covariate_names = _known_covariate_names(covariates)
     resolved_limit = (
         LIMITS.automl_time_limit_seconds if time_limit_seconds is None else time_limit_seconds
     )
     if predictor_factory is None or timeseries_dataframe_cls is None:
         predictor_factory, timeseries_dataframe_cls = _load_autogluon()
     data = timeseries_dataframe_cls.from_data_frame(
-        _context_frame(selected, collection.time_index),
+        _context_frame(selected, collection.time_index, covariates=covariates),
         id_column="item_id",
         timestamp_column="timestamp",
     )
+    known_covariates = None
+    if known_covariate_names:
+        known_covariates = timeseries_dataframe_cls.from_data_frame(
+            _future_frame(
+                selected,
+                next_index_values(collection.time_index, collection.schema_.frequency, forecast_steps),
+                prediction_length=forecast_steps,
+                covariates=covariates,
+                history_end=len(collection.time_index),
+            ),
+            id_column="item_id",
+            timestamp_column="timestamp",
+        )
     fit_kwargs: dict[str, Any] = {
         "train_data": data,
         "presets": presets,
@@ -79,16 +109,23 @@ def forecast_automl(
             storage_path = temporary_directory.name
         else:
             storage_path = model_path
-        predictor = predictor_factory(
-            prediction_length=forecast_steps,
-            target="target",
-            quantile_levels=levels,
-            eval_metric=eval_metric,
-            path=storage_path,
-        )
-        predictor.fit(**fit_kwargs)
-        predictions = predictor.predict(data)
-        leaderboard = _leaderboard_records(predictor.leaderboard(silent=True))
+        predictor_init_kwargs: dict[str, Any] = {
+            "prediction_length": forecast_steps,
+            "target": "target",
+            "quantile_levels": levels,
+            "eval_metric": eval_metric,
+            "path": storage_path,
+        }
+        if known_covariate_names:
+            predictor_init_kwargs["known_covariates_names"] = known_covariate_names
+        predictor = predictor_factory(**predictor_init_kwargs)
+        with _joblib_forecasting_context():
+            predictor.fit(**fit_kwargs)
+            if known_covariates is not None:
+                predictions = predictor.predict(data, known_covariates=known_covariates)
+            else:
+                predictions = predictor.predict(data)
+            leaderboard = _leaderboard_records(predictor.leaderboard(silent=True))
         best_model = _best_model(predictor, leaderboard)
     except Exception as exc:  # noqa: BLE001
         raise EstimationError(
@@ -112,6 +149,7 @@ def forecast_automl(
             levels=levels,
             best_model=best_model,
             eval_metric=eval_metric,
+            covariates=covariates[item.series_id].metadata(),
         )
         for item in selected
     ]
@@ -130,6 +168,7 @@ def forecast_automl(
             "enable_ensemble": enable_ensemble,
             "time_limit_seconds": resolved_limit,
             "model_path": model_path,
+            "covariates": covariate_metadata(covariates),
         },
     )
 
@@ -170,10 +209,21 @@ def _validate_request(
 def _select_series(
     collection: SeriesCollection,
     target_metrics: list[str] | None,
+    excluded_metrics: set[str] | None = None,
 ) -> list[TimeSeriesItem]:
     requested = set(target_metrics or [])
+    excluded = excluded_metrics or set()
+    overlap = requested & excluded
+    if overlap:
+        raise ValidationError(
+            "target_metrics cannot also be covariate metrics",
+            metrics=sorted(overlap),
+        )
     selected = [
-        item for item in collection.series if not requested or item.metric in requested
+        item
+        for item in collection.series
+        if (not requested or item.metric in requested)
+        and (requested or item.metric not in excluded)
     ]
     if not selected:
         raise ValidationError("no series matched target_metrics", target_metrics=target_metrics)
@@ -186,18 +236,52 @@ def _select_series(
     return selected
 
 
-def _context_frame(series: list[TimeSeriesItem], time_index: list[str]):
+def _context_frame(
+    series: list[TimeSeriesItem],
+    time_index: list[str],
+    *,
+    covariates: dict[str, Any] | None,
+):
     pd = _import_pandas()
     rows = []
     for item in series:
-        for stamp, value in zip(time_index, item.values, strict=True):
-            rows.append(
-                {
-                    "item_id": item.series_id,
-                    "timestamp": pd.Timestamp(stamp),
-                    "target": float(value),
-                }
-            )
+        bundle = covariates.get(item.series_id) if covariates else None
+        for idx, (stamp, value) in enumerate(zip(time_index, item.values, strict=True)):
+            row = {
+                "item_id": item.series_id,
+                "timestamp": pd.Timestamp(stamp),
+                "target": float(value),
+            }
+            if bundle is not None:
+                for name in bundle.all_names:
+                    row[name] = bundle.history[name][idx]
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _future_frame(
+    series: list[TimeSeriesItem],
+    future_index: list[str],
+    *,
+    prediction_length: int,
+    covariates: dict[str, Any],
+    history_end: int,
+):
+    pd = _import_pandas()
+    rows = []
+    for item in series:
+        bundle = covariates[item.series_id]
+        if not bundle.known_future_names:
+            continue
+        values = bundle.future_values(history_end=history_end, prediction_length=prediction_length)
+        for idx, stamp in enumerate(future_index):
+            row = {
+                "item_id": item.series_id,
+                "timestamp": pd.Timestamp(stamp),
+            }
+            for name in bundle.known_future_names:
+                row[name] = values[name][idx]
+            rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -209,6 +293,7 @@ def _parse_prediction(
     levels: list[float],
     best_model: str | None,
     eval_metric: str,
+    covariates: dict[str, Any],
 ) -> ProbabilisticForecastSeriesResult:
     try:
         rows = predictions.loc[item.series_id]
@@ -236,13 +321,24 @@ def _parse_prediction(
         forecast_index=forecast_index,
         forecast=_column_values(rows, point_column),
         quantiles=quantiles,
+        covariates=covariates,
         inference_metadata={
             "provider": "autogluon.timeseries",
             "best_model": best_model,
             "eval_metric": eval_metric,
             "point_forecast_column": str(point_column),
+            "covariates": covariates,
         },
     )
+
+
+def _known_covariate_names(covariates: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for bundle in covariates.values():
+        for name in bundle.known_future_names:
+            if name not in names:
+                names.append(name)
+    return names
 
 
 def _quantile_column(frame: Any, level: float) -> Any:
@@ -287,6 +383,14 @@ def _best_model(predictor: Any, leaderboard: list[dict[str, Any]]) -> str | None
             if name in leaderboard[0]:
                 return str(leaderboard[0][name])
     return None
+
+
+def _joblib_forecasting_context() -> Any:
+    try:
+        from joblib import parallel_config  # type: ignore[import-not-found]
+    except ImportError:
+        return nullcontext()
+    return parallel_config(backend="threading", n_jobs=1)
 
 
 def _import_pandas() -> Any:

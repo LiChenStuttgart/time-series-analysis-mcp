@@ -13,6 +13,10 @@ from typing import Any
 
 from time_series_analysis_mcp.config import LIMITS
 from time_series_analysis_mcp.errors import DependencyError, EstimationError, ValidationError
+from time_series_analysis_mcp.model_assets import (
+    injected_model_asset,
+    resolve_model_asset,
+)
 
 from ..metrics import mae, mape, rmse
 from ..schemas import (
@@ -63,14 +67,26 @@ def forecast_toto2(
     groups = _group_series(collection, selected, group_by_dimensions)
     chosen_model = model_id or LIMITS.toto2_model_id
     chosen_device = device or LIMITS.model_device
-    offline = LIMITS.model_offline if local_files_only is None else local_files_only
+    force_local_only = LIMITS.model_offline or local_files_only is True
+    asset = (
+        injected_model_asset(chosen_model)
+        if model is not None
+        else resolve_model_asset(
+            chosen_model,
+            weights_dir=LIMITS.model_weights_dir,
+            allow_remote=(
+                LIMITS.allow_remote_models
+                and not force_local_only
+            ),
+        )
+    )
     torch = torch_module or _import_torch()
     device_value = torch.device(chosen_device)
     provider = model or _load_model(
-        chosen_model,
+        asset.load_path,
         chosen_device,
         LIMITS.model_cache_dir,
-        offline,
+        asset.local_files_only,
     )
     effective_context = min(len(collection.time_index), context_length or _max_context())
 
@@ -137,13 +153,13 @@ def forecast_toto2(
                 metrics=metrics,
                 inference_metadata={
                     "provider": "toto2",
-                    "model_id": chosen_model,
+                    **asset.inference_metadata(),
                     "device": chosen_device,
                     "prediction_length": forecast_steps,
                     "context_length": effective_context,
                     "quantile_levels": levels,
                     "decode_block_size": decode_block_size,
-                    "local_files_only": offline,
+                    "local_files_only": asset.local_files_only,
                     "group_id": prediction["group_id"],
                     "group_variates": prediction["group_variates"],
                     "zero_shot": True,
@@ -388,7 +404,7 @@ def _import_torch() -> Any:
 
 @cache
 def _load_model(
-    model_id: str,
+    model_path: str,
     device: str,
     cache_dir: str | None,
     local_files_only: bool,
@@ -404,40 +420,28 @@ def _load_model(
             python_executable=sys.executable,
             install_command=f"{sys.executable} -m pip install -e '.[toto2]'",
         ) from exc
-    load_options = {"cache_dir": cache_dir, "local_files_only": True}
+    load_options = {
+        "cache_dir": cache_dir,
+        "local_files_only": local_files_only,
+    }
     try:
-        provider = Toto2Model.from_pretrained(model_id, **load_options)
-    except Exception as local_exc:  # noqa: BLE001
-        if local_files_only:
-            raise DependencyError(
-                "Toto 2.0 model weights are not available in the configured local cache",
-                model_id=model_id,
-                cache_dir=cache_dir,
-                local_files_only=True,
-                reason=str(local_exc),
-            ) from local_exc
-        try:
-            provider = Toto2Model.from_pretrained(
-                model_id,
-                cache_dir=cache_dir,
-                local_files_only=False,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise DependencyError(
-                "could not load the Toto 2.0 model; download weights outside a network-restricted MCP process or set TS_MCP_MODEL_CACHE_DIR",
-                model_id=model_id,
-                device=device,
-                cache_dir=cache_dir,
-                local_files_only=False,
-                error_type=type(exc).__name__,
-                reason=str(exc),
-            ) from exc
+        provider = Toto2Model.from_pretrained(model_path, **load_options)
+    except Exception as exc:  # noqa: BLE001
+        raise DependencyError(
+            "could not load the Toto 2.0 model",
+            model_path=model_path,
+            device=device,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+            error_type=type(exc).__name__,
+            reason=str(exc),
+        ) from exc
     try:
         return provider.to(torch.device(device)).eval()
     except Exception as exc:  # noqa: BLE001
         raise DependencyError(
             "could not initialize the Toto 2.0 model on the selected device",
-            model_id=model_id,
+            model_path=model_path,
             device=device,
             error_type=type(exc).__name__,
             reason=str(exc),
